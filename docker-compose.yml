@@ -1,0 +1,173 @@
+version: '3.8'
+
+# ════════════════════════════════════════════════════════════════════════════
+# Event-Driven ML Feature Store — Docker Compose
+# ════════════════════════════════════════════════════════════════════════════
+#
+# Services
+# ────────
+#   zookeeper      — Kafka coordination service
+#   kafka          — Message broker (with automatic topic creation)
+#   db             — PostgreSQL feature store (initialised via init.sql)
+#   feature-client — Python FastAPI service (consumer + REST API)
+#
+# Quick start
+# ───────────
+#   docker-compose up --build
+#   docker-compose exec feature-client python producer.py --count 500
+#   curl http://localhost:8000/features/user_0001
+
+networks:
+  feature-net:
+    driver: bridge
+
+volumes:
+  db_data:
+
+services:
+
+  # ── Zookeeper ─────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.1
+    hostname: zookeeper
+    container_name: zookeeper
+    networks:
+      - feature-net
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Kafka ─────────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.0.1
+    hostname: kafka
+    container_name: kafka
+    networks:
+      - feature-net
+    ports:
+      - "9092:9092"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Two listeners:
+      #   PLAINTEXT       — for internal Docker-network traffic (other containers)
+      #   PLAINTEXT_HOST  — for host-machine access (e.g. running producer.py locally)
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Auto-create topics on first use (safety net; topics are also created explicitly)
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:29092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Topic initialiser (one-shot container) ────────────────────────────────
+  kafka-init:
+    image: confluentinc/cp-kafka:7.0.1
+    container_name: kafka_init
+    networks:
+      - feature-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: >
+      "
+        echo '--- Creating Kafka topics ---'
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+          --topic raw-events --partitions 3 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+          --topic features-store-updates --partitions 3 --replication-factor 1
+        echo '--- Topics created ---'
+        kafka-topics --bootstrap-server kafka:29092 --list
+      "
+    restart: "no"
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  db:
+    image: postgres:13
+    hostname: db
+    container_name: postgres_db
+    networks:
+      - feature-net
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-feature_store}
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-user} -d ${POSTGRES_DB:-feature_store}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Feature Client (FastAPI + Kafka Consumer) ─────────────────────────────
+  feature-client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    hostname: feature-client
+    container_name: feature_client
+    networks:
+      - feature-net
+    ports:
+      - "8000:8000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
+      RAW_EVENTS_TOPIC: ${RAW_EVENTS_TOPIC:-raw-events}
+      FEATURES_UPDATE_TOPIC: ${FEATURES_UPDATE_TOPIC:-features-store-updates}
+      KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-feature-store-consumer-group}
+      KAFKA_CONSUMER_POLL_TIMEOUT: ${KAFKA_CONSUMER_POLL_TIMEOUT:-1.0}
+      KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS: ${KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS:-10000}
+      # PostgreSQL
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-feature_store}
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_MIN_CONNECTIONS: ${POSTGRES_MIN_CONNECTIONS:-1}
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-10}
+      POSTGRES_CONNECT_RETRY_ATTEMPTS: ${POSTGRES_CONNECT_RETRY_ATTEMPTS:-5}
+      POSTGRES_CONNECT_RETRY_BASE_DELAY: ${POSTGRES_CONNECT_RETRY_BASE_DELAY:-2.0}
+      # App
+      APP_HOST: ${APP_HOST:-0.0.0.0}
+      APP_PORT: ${APP_PORT:-8000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
