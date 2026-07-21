@@ -1,0 +1,253 @@
+{
+  "info": {
+    "name": "ML Feature Store API",
+    "description": "Postman collection for the Event-Driven ML Feature Store Client. Tests all endpoints: health check and feature retrieval.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "ml-feature-store-v1"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string",
+      "description": "Base URL of the feature-client service"
+    },
+    {
+      "key": "entity_id",
+      "value": "user_0001",
+      "type": "string",
+      "description": "Sample entity ID to query features for"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "item": [
+        {
+          "name": "GET /health — Service healthy",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Returns liveness status of the service, PostgreSQL connection, and Kafka consumer thread."
+          },
+          "response": [
+            {
+              "name": "200 OK — Healthy",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": \"healthy\",\n  \"db_connected\": true,\n  \"kafka_consumer_running\": true,\n  \"timestamp\": \"2024-06-01T09:00:00+00:00\"\n}"
+            },
+            {
+              "name": "200 OK — Degraded",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"status\": \"degraded\",\n  \"db_connected\": true,\n  \"kafka_consumer_running\": false,\n  \"timestamp\": \"2024-06-01T09:00:00+00:00\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response has status field', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('status');",
+                  "  pm.expect(body).to.have.property('db_connected');",
+                  "  pm.expect(body).to.have.property('kafka_consumer_running');",
+                  "  pm.expect(body).to.have.property('timestamp');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Features",
+      "item": [
+        {
+          "name": "GET /features/{entity_id} — 200 Found",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/features/{{entity_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["features", "{{entity_id}}"]
+            },
+            "description": "Retrieve all materialized ML features for a known entity. Run the producer first to generate events."
+          },
+          "response": [
+            {
+              "name": "200 OK — Features returned",
+              "status": "OK",
+              "code": 200,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"entity_id\": \"user_0001\",\n  \"count\": 5,\n  \"features\": [\n    {\n      \"entity_id\": \"user_0001\",\n      \"feature_name\": \"last_action\",\n      \"feature_value\": \"purchase\",\n      \"timestamp\": \"2024-06-01T09:15:32.123456+00:00\"\n    },\n    {\n      \"entity_id\": \"user_0001\",\n      \"feature_name\": \"last_device\",\n      \"feature_value\": \"mobile\",\n      \"timestamp\": \"2024-06-01T09:15:32.123456+00:00\"\n    },\n    {\n      \"entity_id\": \"user_0001\",\n      \"feature_name\": \"last_event_timestamp\",\n      \"feature_value\": \"2024-06-01T09:15:32+00:00\",\n      \"timestamp\": \"2024-06-01T09:15:32.123456+00:00\"\n    },\n    {\n      \"entity_id\": \"user_0001\",\n      \"feature_name\": \"last_page_visited\",\n      \"feature_value\": \"checkout\",\n      \"timestamp\": \"2024-06-01T09:15:32.123456+00:00\"\n    },\n    {\n      \"entity_id\": \"user_0001\",\n      \"feature_name\": \"user_activity_count\",\n      \"feature_value\": \"42\",\n      \"timestamp\": \"2024-06-01T09:15:32.123456+00:00\"\n    }\n  ]\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response has correct shape', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('entity_id');",
+                  "  pm.expect(body).to.have.property('features');",
+                  "  pm.expect(body).to.have.property('count');",
+                  "  pm.expect(body.features).to.be.an('array');",
+                  "  pm.expect(body.count).to.equal(body.features.length);",
+                  "});",
+                  "pm.test('Each feature has required fields', () => {",
+                  "  const body = pm.response.json();",
+                  "  body.features.forEach(f => {",
+                  "    pm.expect(f).to.have.property('entity_id');",
+                  "    pm.expect(f).to.have.property('feature_name');",
+                  "    pm.expect(f).to.have.property('feature_value');",
+                  "    pm.expect(f).to.have.property('timestamp');",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /features/{entity_id} — 404 Not Found",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/features/unknown_entity_xyz",
+              "host": ["{{base_url}}"],
+              "path": ["features", "unknown_entity_xyz"]
+            },
+            "description": "Returns 404 when no features exist for the given entity_id."
+          },
+          "response": [
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [{ "key": "Content-Type", "value": "application/json" }],
+              "body": "{\n  \"detail\": \"No features found for entity_id='unknown_entity_xyz'. Ensure events have been produced and processed.\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('Error detail is present', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('detail');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /features/{entity_id} — Different entity",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/features/user_0005",
+              "host": ["{{base_url}}"],
+              "path": ["features", "user_0005"]
+            },
+            "description": "Query features for a different entity."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200 or 404', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 404]);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "OpenAPI Docs",
+      "item": [
+        {
+          "name": "GET /docs — Swagger UI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/docs",
+              "host": ["{{base_url}}"],
+              "path": ["docs"]
+            },
+            "description": "Access the auto-generated Swagger UI documentation."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Docs page loads', () => pm.response.to.have.status(200));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /openapi.json — OpenAPI Schema",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openapi.json",
+              "host": ["{{base_url}}"],
+              "path": ["openapi.json"]
+            },
+            "description": "Fetch the raw OpenAPI JSON schema."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('OpenAPI schema loads', () => pm.response.to.have.status(200));",
+                  "pm.test('Has openapi field', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.have.property('openapi');",
+                  "  pm.expect(body).to.have.property('paths');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
